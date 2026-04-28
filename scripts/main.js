@@ -232,7 +232,6 @@ Events.run(ClientLoadEvent, e => {
                     //failsafe for loading to another map in a diffrent season
                     mainTex = lastTex;
                 }else if(lastTex != mainTex){
-                    Log.err(mainTex.toString() + "");
 
                     squish = Math.max(squish, 0.5);
                     lastTex = mainTex;
