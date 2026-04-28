@@ -118,7 +118,6 @@ Events.run(WorldLoadEvent, e => {
             summerPresent++;
         }
 
-        Log.err("mt " + mapType + " " + summerPresent + " " + coldPresent)
         //Summer
         if (hasWater && summerPresent >= summerMin) mapType = 1;
     }
