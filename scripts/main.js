@@ -8,6 +8,11 @@ let hintLabel = undefined;
 let hasUnit = false
 let playedLines = new ObjectSet();
 
+let coldFloors = new Seq();
+let summerFloors = new Seq();
+let waterFloors = new Seq();
+let mapType = 0;
+
 function loadTex(name, defValue){
     let file = Vars.tree.get("chibis/" + name + ".png");
     if(file.exists()){
@@ -28,6 +33,12 @@ function loadAll(name){
             shooting: loadTex(name + "-shooting", mainTex),
         };
     }
+}
+
+function getData(data){
+    if(mapType == 1 ) return data.summer;
+    if(mapType == 2 ) return data.winter;
+    return data.def;
 }
 
 function fetchText(hint){
@@ -64,11 +75,56 @@ function showDialogue(text, duration){
 
         if(duration){
             hintLabel.actions(Actions.delay(duration), Actions.run(() => {
-                    hintLabel.actions(Actions.parallel(Actions.alpha(0, 1.0, Interp.smooth), Actions.translateBy(0, Scl.scl(-50), 1.0, Interp.swingIn)), Actions.hide());
+                hintLabel.actions(Actions.parallel(Actions.alpha(0, 1.0, Interp.smooth), Actions.translateBy(0, Scl.scl(-50), 1.0, Interp.swingIn)), Actions.hide());
             }));
         }
     }
 }
+
+Events.run(WorldLoadEvent, e => {
+    mapType = 0;
+
+    let summerPresent = 0;
+    let summerMin = 4;
+    let coldPresent = 0
+    let coldMin = 3;
+
+    //TODO: aside from weather, consider other indcators for summer -rushie
+    if(!Vars.state.rules.weather.contains( w =>  w.weather  == Weathers.rain)) summerPresent ++;
+    if(Vars.state.rules.weather.contains( w => w.weather  == Weathers.sandstorm)) summerPresent ++;
+    if(Vars.state.rules.weather.contains( w => w.weather  == Weathers.snow)) coldPresent ++;
+
+    for(var i = 0; i < coldFloors.size; i ++) {
+        if(coldPresent >= coldMin) continue
+        if(!Vars.indexer.isBlockPresent(coldFloors.get(i)))continue;
+        coldPresent++;
+    }
+
+    if(coldPresent == 0){
+        let hasWater = false;
+
+        for(var i = 0; i < waterFloors.size; i ++) {
+            if(summerPresent >= summerMin) continue;
+            if(!Vars.indexer.isBlockPresent(waterFloors.get(i))) continue;
+            hasWater = true;
+            //count any shallow watter thats based on a summer tile
+            if(waterFloors.get(i) instanceof  ShallowLiquid && summerFloors.contains(waterFloors.get(i).floorBase)) summerPresent++;
+            if(waterFloors.get(i).drownTime > 0) summerPresent++;
+
+        }
+        for(var i = 0; i < summerFloors.size; i ++) {
+            if(summerPresent >= summerMin) continue;
+            if(!Vars.indexer.isBlockPresent(summerFloors.get(i))) continue;
+            summerPresent++;
+        }
+
+        Log.err("mt " + mapType + " " + summerPresent + " " + coldPresent)
+        //Summer
+        if (hasWater && summerPresent >= summerMin) mapType = 1;
+    }
+    //Winter (set if at least 3 "cold" tiles are present
+    else if (coldPresent >= coldMin) mapType = 2;
+});
 
 Events.on(UnitControlEvent, e => {
     if(e.player == Vars.player){
@@ -90,14 +146,21 @@ Events.on(PickupEvent, e => {
 
 Events.run(ClientLoadEvent, e => {
     Seq.withArrays(Vars.content.units(), Vars.content.blocks().select(b => b instanceof Turret || b == Blocks.router))
-    .each(u => {
-        let main = loadAll(u.name);
-        if(main){
-            textures[u] = {
-                def: main,
-                summer: loadAll(u.name + "-summer")
-            };
-        }
+        .each(u => {
+            let main = loadAll(u.name);
+            if(main){
+                textures[u] = {
+                    def: main,
+                    summer: loadAll(u.name + "-summer"),
+                    winter: loadAll(u.name + "-winter")
+                };
+            }
+    });
+
+    Seq.withArrays(Vars.content.blocks().select(b => b instanceof Floor)).each(u => {
+        if(u.itemDrop != null && u.itemDrop == Items.sand) summerFloors.add(u);
+        if(u.liquidDrop != null && u.liquidDrop == Liquids.water) waterFloors.add(u);
+        if(u.name != null && u.name.length >= 1 && (u.name.includes("ice") || u.name.includes("snow") || u.name.includes("icy"))) coldFloors.add(u);
     });
 
     let config = {}
@@ -111,7 +174,7 @@ Events.run(ClientLoadEvent, e => {
     hintLabel.setStyle(Styles.outlineLabel);
     hintLabel.setAlignment(Align.center, Align.left);
     hintLabel.setWrap(true);
-    
+
     let elem = extend(Element, {
         draw(){
             hasUnit = false;
@@ -141,48 +204,55 @@ Events.run(ClientLoadEvent, e => {
                         reloads[i] = val;
                     }
                 }
-	        }else{
+            }else{
                 fade = Mathf.approachDelta(fade, 0, 0.04);
-	        }
-	        
-	        if(lastType && textures[lastType] && Vars.state.isGame()){
-	            hasUnit = true;
-                let isSummer = Vars.indexer.isBlockPresent(Blocks.sand) && Vars.indexer.isBlockPresent(Blocks.sandWater) && !Vars.indexer.isBlockPresent(Blocks.ice) && !Vars.indexer.isBlockPresent(Blocks.snow) && 
-                    (Vars.indexer.isBlockPresent(Blocks.water) || Vars.indexer.isBlockPresent(Blocks.deepwater));
+            }
+
+            if(lastType && textures[lastType] && Vars.state.isGame()) {
+                hasUnit = true;
 
                 let mainData = textures[lastType];
-                let data = (isSummer ? mainData.summer : mainData.def) || mainData.def;
+                let data = getData(mainData) || mainData;
                 let unit = Vars.player.unit();
 
-                let mainTex = 
-                    Vars.player.dead() ? data.main : 
-                    (
-                        unit.mining() ? data.mining :
-                        unit.activelyBuilding() ? data.building :
-                        unit.isShooting ? data.shooting :
-                        data.main
-                    );
-                
-                if(lastTex != mainTex){
+                let mainTex =
+                    Vars.player.dead() ? data.main :
+                        (
+                            unit.mining() ? data.mining :
+                                unit.activelyBuilding() ? data.building :
+                                    unit.isShooting ? data.shooting :
+                                        data.main
+                        );
+
+                //these are 100% caused by rushie somehow somewhere so this are jank work arounds -rushie
+                if (mainTex === "undefined" && lastTex === "undefined"){
+                    //fail safe for the 1st map while possing a turret, doesn't actually render but crashes otherwsie
+                    mainTex = Core.atlas.error.texture;
+                }else if((mainTex == null || mainTex === "undefined") && lastTex != null){
+                    //failsafe for loading to another map in a diffrent season
+                    mainTex = lastTex;
+                }else if(lastTex != mainTex){
+                    Log.err(mainTex.toString() + "");
+
                     squish = Math.max(squish, 0.5);
                     lastTex = mainTex;
                 }
-                
+
                 let conf = config[lastType] || {}
                 let anchor = (conf.anchor === undefined ? true : conf.anchor)
+                let tex = Draw.wrap(mainTex);
                 let fin = Interp.swingOut.apply(fade);
-	            let tex = Draw.wrap(mainTex);
-	            let height = width * tex.height / tex.width;
+                let height = width * tex.height / tex.width;
                 let squishFactor = 0.2 * squish + Mathf.sin(Time.globalTime, 20, 0.01);
                 let floatScl = 50, floatMag = 8;
                 let ox = Mathf.sin(Time.globalTime, 100, floatMag * 0.25), oy = Mathf.cos(Time.globalTime + 5, floatScl, floatMag) - height * 0.02;
 
                 let fwidth = width * (1 + squishFactor)
                 let fheight = height * (1 - squishFactor);
-                
+
                 Draw.color();
-				Draw.rect(tex, width/2 + ox, Math.min(-height * (1.0 - fin) + height/2 + oy - 1, anchor ? fheight/2 : -1000.0), fwidth, fheight);
-             
+                Draw.rect(tex, width/2 + ox, Math.min(-height * (1.0 - fin) + height/2 + oy - 1, anchor ? fheight/2 : -1000.0), fwidth, fheight);
+
                 let pad = Scl.scl(12);
                 hintLabel.setBounds(pad/2, height + oy, width-pad*2, 0)
             }
