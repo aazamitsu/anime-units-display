@@ -1,3 +1,10 @@
+const MAP_DEFAULT = 0;
+const MAP_SUMMER = 1;
+const MAP_WINTER = 2;
+
+const SUMMER_MIN_TYPES = 4;
+const WINTER_MIN_TYPES = 2;
+
 let textures = {};
 let lastType = undefined;
 let fade = 0;
@@ -11,7 +18,7 @@ let playedLines = new ObjectSet();
 let coldFloors = new Seq();
 let summerFloors = new Seq();
 let waterFloors = new Seq();
-let mapType = 0;
+let mapType = MAP_DEFAULT;
 
 function loadTex(name, defValue){
     let file = Vars.tree.get("chibis/" + name + ".png");
@@ -36,9 +43,9 @@ function loadAll(name){
 }
 
 function getData(data){
-    if(mapType == 1 ) return data.summer;
-    if(mapType == 2 ) return data.winter;
-    return data.def;
+    return (mapType == MAP_SUMMER ? data.summer :
+           mapType == MAP_WINTER ? data.winter :
+           data.def) || data.def;
 }
 
 function fetchText(hint){
@@ -82,47 +89,33 @@ function showDialogue(text, duration){
 }
 
 Events.run(WorldLoadEvent, e => {
-    mapType = 0;
+    mapType = MAP_DEFAULT;
 
-    let summerPresent = 0;
-    let summerMin = 4;
-    let coldPresent = 0
-    let coldMin = 3;
+    let summerPresent = summerFloors.count(f => Vars.indexer.isBlockPresent(f));
+    let coldPresent = coldFloors.count(f => Vars.indexer.isBlockPresent(f));
 
     //TODO: aside from weather, consider other indcators for summer -rushie
-    if(!Vars.state.rules.weather.contains( w =>  w.weather  == Weathers.rain)) summerPresent ++;
-    if(Vars.state.rules.weather.contains( w => w.weather  == Weathers.sandstorm)) summerPresent ++;
-    if(Vars.state.rules.weather.contains( w => w.weather  == Weathers.snow)) coldPresent ++;
-
-    for(var i = 0; i < coldFloors.size; i ++) {
-        if(coldPresent >= coldMin) continue
-        if(!Vars.indexer.isBlockPresent(coldFloors.get(i)))continue;
-        coldPresent++;
-    }
+    if(!Vars.state.rules.weather.contains(w => w.weather == Weathers.rain)) summerPresent ++;
+    if(Vars.state.rules.weather.contains(w => w.weather == Weathers.sandstorm)) summerPresent ++;
+    if(Vars.state.rules.weather.contains(w => w.weather == Weathers.snow)) coldPresent ++;
 
     if(coldPresent == 0){
         let hasWater = false;
 
-        for(var i = 0; i < waterFloors.size; i ++) {
-            if(summerPresent >= summerMin) continue;
+        for(var i = 0; i < waterFloors.size && summerPresent < SUMMER_MIN_TYPES; i ++) {
             if(!Vars.indexer.isBlockPresent(waterFloors.get(i))) continue;
             hasWater = true;
             //count any shallow watter thats based on a summer tile
-            if(waterFloors.get(i) instanceof  ShallowLiquid && summerFloors.contains(waterFloors.get(i).floorBase)) summerPresent++;
+            if(waterFloors.get(i) instanceof ShallowLiquid && summerFloors.contains(waterFloors.get(i).floorBase)) summerPresent++;
             if(waterFloors.get(i).drownTime > 0) summerPresent++;
-
-        }
-        for(var i = 0; i < summerFloors.size; i ++) {
-            if(summerPresent >= summerMin) continue;
-            if(!Vars.indexer.isBlockPresent(summerFloors.get(i))) continue;
-            summerPresent++;
         }
 
         //Summer
-        if (hasWater && summerPresent >= summerMin) mapType = 1;
+        if(hasWater && summerPresent >= SUMMER_MIN_TYPES) mapType = MAP_SUMMER;
+    }else if(coldPresent >= WINTER_MIN_TYPES){
+        //Winter (set if at least 3 "cold" tiles are present
+        mapType = MAP_WINTER;
     }
-    //Winter (set if at least 3 "cold" tiles are present
-    else if (coldPresent >= coldMin) mapType = 2;
 });
 
 Events.on(UnitControlEvent, e => {
@@ -156,10 +149,11 @@ Events.run(ClientLoadEvent, e => {
             }
     });
 
-    Seq.withArrays(Vars.content.blocks().select(b => b instanceof Floor)).each(u => {
-        if(u.itemDrop != null && u.itemDrop == Items.sand) summerFloors.add(u);
-        if(u.liquidDrop != null && u.liquidDrop == Liquids.water) waterFloors.add(u);
-        if(u.name != null && u.name.length >= 1 && (u.name.includes("ice") || u.name.includes("snow") || u.name.includes("icy"))) coldFloors.add(u);
+    Vars.content.blocks().each(u => {
+        if(!(u instanceof Floor)) return;
+        if(u.itemDrop == Items.sand) summerFloors.add(u);
+        if(u.liquidDrop == Liquids.water) waterFloors.add(u);
+        if(u.name.includes("ice") || u.name.includes("snow") || u.name.includes("icy")) coldFloors.add(u);
     });
 
     let config = {}
@@ -207,31 +201,24 @@ Events.run(ClientLoadEvent, e => {
                 fade = Mathf.approachDelta(fade, 0, 0.04);
             }
 
-            if(lastType && textures[lastType] && Vars.state.isGame()) {
+            let mainData = textures[lastType];
+
+            if(lastType && mainData && Vars.state.isGame()){
                 hasUnit = true;
 
-                let mainData = textures[lastType];
-                let data = getData(mainData) || mainData;
+                let data = getData(mainData);
                 let unit = Vars.player.unit();
 
                 let mainTex =
                     Vars.player.dead() ? data.main :
-                        (
-                            unit.mining() ? data.mining :
-                                unit.activelyBuilding() ? data.building :
-                                    unit.isShooting ? data.shooting :
-                                        data.main
-                        );
+                    (
+                        unit.mining() ? data.mining :
+                        unit.activelyBuilding() ? data.building :
+                        unit.isShooting ? data.shooting :
+                        data.main
+                    );
 
-                //these are 100% caused by rushie somehow somewhere so this are jank work arounds -rushie
-                if (mainTex === "undefined" && lastTex === "undefined"){
-                    //fail safe for the 1st map while possing a turret, doesn't actually render but crashes otherwsie
-                    mainTex = Core.atlas.error.texture;
-                }else if((mainTex == null || mainTex === "undefined") && lastTex != null){
-                    //failsafe for loading to another map in a diffrent season
-                    mainTex = lastTex;
-                }else if(lastTex != mainTex){
-
+                if(lastTex != mainTex){
                     squish = Math.max(squish, 0.5);
                     lastTex = mainTex;
                 }
