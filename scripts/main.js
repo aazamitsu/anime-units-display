@@ -4,9 +4,12 @@ const MAP_WINTER = 2;
 
 const SUMMER_MIN_TYPES = 4;
 const WINTER_MIN_TYPES = 2;
+const VARIANT_NAMES = ["chibi", "peek"];
+const NO_VARIANT = -1;
 
-let textures = {};
+let entries = {};
 let lastType = undefined;
+let variantSwitchTime = 0;
 let fade = 0;
 let squish = 0;
 let reloads = [];
@@ -42,7 +45,14 @@ function loadAll(name){
     }
 }
 
-function getData(data){
+function getData(unit, data){
+    if(data.variants.length > 0){
+        let id = getVariant(unit);
+        if(id != NO_VARIANT && id < data.variants.length && id >= 0){
+            return data.variants[id];
+        }
+    }
+
     return (mapType == MAP_SUMMER ? data.summer :
            mapType == MAP_WINTER ? data.winter :
            data.def) || data.def;
@@ -85,6 +95,24 @@ function showDialogue(text, duration){
                 hintLabel.actions(Actions.parallel(Actions.alpha(0, 1.0, Interp.smooth), Actions.translateBy(0, Scl.scl(-50), 1.0, Interp.swingIn)), Actions.hide());
             }));
         }
+    }
+}
+
+function getVariant(unit){
+    return Core.settings.getInt(unit.name + "-anime-variant", NO_VARIANT);
+}
+
+function setVariant(unit, id){
+    Core.settings.put(unit.name + "-anime-variant", new Packages.java.lang.Integer(id));
+}
+
+function nextVariant(unit){
+    let data = entries[unit];
+    if(data && data.variants.length > 0){
+        let cur = getVariant(unit);
+        setVariant(unit, cur == NO_VARIANT ? 0 : cur >= data.variants.length - 1 ? NO_VARIANT : (cur + 1));
+        variantSwitchTime = 1.0;
+        squish = 1.0;
     }
 }
 
@@ -141,11 +169,18 @@ Events.run(ClientLoadEvent, e => {
         .each(u => {
             let main = loadAll(u.name);
             if(main){
-                textures[u] = {
+                entries[u] = {
                     def: main,
                     summer: loadAll(u.name + "-summer"),
-                    winter: loadAll(u.name + "-winter")
+                    winter: loadAll(u.name + "-winter"),
+                    variants: []
                 };
+                for(let variant of VARIANT_NAMES){
+                    let entry = loadAll(u.name + "-" + variant)
+                    if(entry){
+                        entries[u].variants.push(entry)
+                    }
+                }
             }
     });
 
@@ -156,10 +191,7 @@ Events.run(ClientLoadEvent, e => {
         if(u.name.includes("ice") || u.name.includes("snow") || u.name.includes("icy")) coldFloors.add(u);
     });
 
-    let config = {}
-    config[UnitTypes.zenith] = {
-        anchor: false
-    }
+    entries[UnitTypes.zenith].variants[0].anchor = false
 
     let hints = Reflect.get(Vars.ui.hints, "group");
     let lastHint;
@@ -201,12 +233,14 @@ Events.run(ClientLoadEvent, e => {
                 fade = Mathf.approachDelta(fade, 0, 0.04);
             }
 
-            let mainData = textures[lastType];
+            variantSwitchTime = Mathf.approachDelta(variantSwitchTime, 0, 0.04);
+
+            let mainData = entries[lastType];
 
             if(lastType && mainData && Vars.state.isGame()){
                 hasUnit = true;
 
-                let data = getData(mainData);
+                let data = getData(lastType, mainData);
                 let unit = Vars.player.unit();
 
                 let mainTex =
@@ -223,8 +257,7 @@ Events.run(ClientLoadEvent, e => {
                     lastTex = mainTex;
                 }
 
-                let conf = config[lastType] || {}
-                let anchor = (conf.anchor === undefined ? true : conf.anchor)
+                let anchor = (data.anchor === undefined ? true : data.anchor)
                 let tex = Draw.wrap(mainTex);
                 let fin = Interp.swingOut.apply(fade);
                 let height = width * tex.height / tex.width;
@@ -235,16 +268,23 @@ Events.run(ClientLoadEvent, e => {
                 let fwidth = width * (1 + squishFactor)
                 let fheight = height * (1 - squishFactor);
 
+                let x = width/2 + ox
+                let y = Math.min(-height * (1.0 - fin) + height/2 + oy - 1, anchor ? fheight/2 : 10000.0);
+
                 Draw.color();
-                Draw.rect(tex, width/2 + ox, Math.min(-height * (1.0 - fin) + height/2 + oy - 1, anchor ? fheight/2 : -1000.0), fwidth, fheight);
+                Draw.mixcol(Color.white, Interp.pow3.apply(variantSwitchTime));
+                Draw.rect(tex, x, y, fwidth, fheight);
 
                 let pad = Scl.scl(12);
                 hintLabel.setBounds(pad/2, height + oy, width-pad*2, 0)
+                elem.setBounds(x - fwidth/2, y - fheight/2, fwidth, fheight)
+                Draw.reset();
             }
 
             squish = Mathf.approachDelta(squish, 0, 0.05);
         }
     });
+    
     elem.update(() => {
         hints.getChildren().each(group => {
             if(group.getChildren().size > 1){
@@ -268,4 +308,16 @@ Events.run(ClientLoadEvent, e => {
     });
     elem.touchable = Touchable.disabled;
     Core.app.post(() => Vars.ui.hudGroup.addChildAt(0, elem));
+    Core.input.getInputMultiplexer().addProcessor(0, GestureDetector(extend(GestureDetector.GestureListener, {
+        tap(x, y, count, button){
+            if(count == 2 && button == KeyCode.mouseLeft && Vars.state.isGame() && !Vars.player.dead()){
+                
+                let v = elem.screenToLocalCoordinates(Tmp.v1.set(x, y)).add(Core.scene.marginLeft, Core.scene.marginBottom);
+                if(Rect.contains(elem.x, elem.y, elem.width, elem.height, v.x, v.y)){
+                    nextVariant(Vars.player.unit().type);
+                }
+            }
+            return false;
+        }
+    })));
 })
